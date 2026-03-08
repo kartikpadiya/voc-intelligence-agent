@@ -1,682 +1,659 @@
 import os
 import json
+import sqlite3
 from datetime import datetime
 from groq import Groq
 from dotenv import load_dotenv
 from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch, cm
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table,
-    TableStyle, PageBreak, HRFlowable
-)
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
-from database import get_all_reviews, get_weekly_reviews
+from reportlab.lib.colors import HexColor, white, black
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from database import get_all_reviews, get_weekly_reviews, DB_PATH
 
 load_dotenv()
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 # Colors
-PRIMARY    = colors.HexColor('#1a1a2e')
-ACCENT     = colors.HexColor('#0f3460')
-HIGHLIGHT  = colors.HexColor('#e94560')
-SUCCESS    = colors.HexColor('#2ecc71')
-WARNING    = colors.HexColor('#f39c12')
-DANGER     = colors.HexColor('#e74c3c')
-LIGHT      = colors.HexColor('#f8f9fa')
-GRAY       = colors.HexColor('#6c757d')
-WHITE      = colors.white
+PRIMARY = HexColor("#0a0a0f")
+ACCENT = HexColor("#e94560")
+ACCENT2 = HexColor("#0f3460")
+SUCCESS = HexColor("#2ecc71")
+WARNING = HexColor("#f39c12")
+DANGER = HexColor("#e74c3c")
+LIGHT = HexColor("#f5f5f5")
+DARK = HexColor("#1a1a2e")
+
+THEMES = ["Sound Quality", "Battery Life", "Comfort/Fit", "App Experience",
+          "Price/Value", "Delivery", "Build Quality", "ANC"]
 
 
-def get_styles():
-    styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(
-        name='CoverTitle', fontSize=32, textColor=WHITE,
-        alignment=TA_CENTER, fontName='Helvetica-Bold', spaceAfter=8
-    ))
-    styles.add(ParagraphStyle(
-        name='CoverSub', fontSize=13, textColor=colors.HexColor('#cccccc'),
-        alignment=TA_CENTER, fontName='Helvetica', spaceAfter=4
-    ))
-    styles.add(ParagraphStyle(
-        name='SectionHeader', fontSize=15, textColor=WHITE,
-        fontName='Helvetica-Bold', spaceBefore=14, spaceAfter=8
-    ))
-    styles.add(ParagraphStyle(
-        name='SubHeader', fontSize=12, textColor=ACCENT,
-        fontName='Helvetica-Bold', spaceBefore=10, spaceAfter=5
-    ))
-    styles.add(ParagraphStyle(
-        name='Body2', fontSize=10, textColor=colors.HexColor('#333333'),
-        fontName='Helvetica', spaceBefore=3, spaceAfter=3, leading=15
-    ))
-    styles.add(ParagraphStyle(
-        name='Quote2', fontSize=10, textColor=colors.HexColor('#555555'),
-        fontName='Helvetica-Oblique', spaceBefore=5, spaceAfter=5,
-        leftIndent=20, rightIndent=20, leading=15
-    ))
-    styles.add(ParagraphStyle(
-        name='AIText', fontSize=10, textColor=colors.HexColor('#1a1a2e'),
-        fontName='Helvetica', spaceBefore=4, spaceAfter=4,
-        leading=16, leftIndent=10
-    ))
-    return styles
+# ─── DATA HELPERS ───
+
+def get_products():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT product_id, product_name FROM reviews")
+    products = cursor.fetchall()
+    conn.close()
+    return products
 
 
-def get_data(product_id):
-    reviews = get_all_reviews(product_id)
+def get_stats(reviews):
     total = len(reviews)
-    analyzed = [r for r in reviews if r.get("sentiment")]
-
-    sentiment = {"Positive": 0, "Negative": 0, "Neutral": 0}
-    for r in analyzed:
-        s = r.get("sentiment", "Neutral")
-        sentiment[s] = sentiment.get(s, 0) + 1
-
-    rating_dist = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
-    for r in reviews:
-        rating = int(r.get("rating", 3))
-        if rating in rating_dist:
-            rating_dist[rating] += 1
-
-    avg_rating = round(
-        sum(r.get("rating", 0) for r in reviews) / total, 2
-    ) if total > 0 else 0
-
-    theme_data = {}
-    for r in analyzed:
-        themes = json.loads(r["themes"]) if r.get("themes") else []
-        s = r.get("sentiment", "Neutral")
-        for theme in themes:
-            if theme not in theme_data:
-                theme_data[theme] = {
-                    "total": 0, "Positive": 0, "Negative": 0, "Neutral": 0
-                }
-            theme_data[theme]["total"] += 1
-            theme_data[theme][s] += 1
-
-    keywords = {
-        "bluetooth": 0, "battery": 0, "sound quality": 0,
-        "comfortable": 0, "anc": 0, "fit": 0, "return": 0,
-        "disconnect": 0, "charging": 0, "mic": 0,
-        "bass": 0, "volume": 0, "pairing": 0, "noise": 0
-    }
-    for r in reviews:
-        text = (r.get("text", "") + " " + r.get("title", "")).lower()
-        for kw in keywords:
-            if kw in text:
-                keywords[kw] += 1
-
-    neg_reviews = [r for r in analyzed if r.get("sentiment") == "Negative"][:3]
-    pos_reviews = [r for r in analyzed if r.get("sentiment") == "Positive"][:3]
-
+    if not total:
+        return {}
+    avg = round(sum(r.get("rating", 0) for r in reviews) / total, 2)
+    pos = sum(1 for r in reviews if r.get("sentiment") == "Positive")
+    neg = sum(1 for r in reviews if r.get("sentiment") == "Negative")
+    neu = total - pos - neg
     return {
-        "total": total, "analyzed": len(analyzed),
-        "sentiment": sentiment, "avg_rating": avg_rating,
-        "rating_dist": rating_dist, "theme_data": theme_data,
-        "keywords": keywords, "neg_reviews": neg_reviews,
-        "pos_reviews": pos_reviews
+        "total": total, "avg_rating": avg,
+        "positive": pos, "positive_pct": f"{round(pos/total*100,1)}%",
+        "negative": neg, "negative_pct": f"{round(neg/total*100,1)}%",
+        "neutral": neu, "neutral_pct": f"{round(neu/total*100,1)}%",
     }
 
 
-def get_ai_insights(product_name, data):
-    print(f"Getting AI insights for {product_name}...")
-    total = data["total"]
-    analyzed = data["analyzed"]
+def get_theme_data(reviews):
+    result = {}
+    total = len(reviews)
+    for theme in THEMES:
+        result[theme] = {"Positive": 0, "Negative": 0, "Neutral": 0, "total": 0, "quotes": []}
+    for r in reviews:
+        themes = json.loads(r["themes"]) if r.get("themes") else []
+        sentiment = r.get("sentiment", "Neutral")
+        for theme in themes:
+            if theme in result:
+                result[theme][sentiment] += 1
+                result[theme]["total"] += 1
+                if len(result[theme]["quotes"]) < 2:
+                    result[theme]["quotes"].append(f"[{r['rating']}★] {r['text'][:120]}")
+    for theme in result:
+        t = result[theme]["total"]
+        result[theme]["pct"] = f"{round(t/total*100,1)}%" if total > 0 else "0%"
+        pos = result[theme]["Positive"]
+        neg = result[theme]["Negative"]
+        if neg > pos:
+            result[theme]["health"] = "PROBLEM AREA"
+        elif pos > neg * 2:
+            result[theme]["health"] = "STRENGTH"
+        elif t == 0:
+            result[theme]["health"] = "NO DATA"
+        else:
+            result[theme]["health"] = "MIXED"
+    return result
 
-    kw_summary = ""
-    for kw, count in sorted(
-        data["keywords"].items(), key=lambda x: -x[1]
-    )[:10]:
+
+def get_issues(reviews):
+    keywords = {
+        "Bluetooth Disconnects": ["disconnect", "bluetooth drop", "keeps disconnecting"],
+        "Poor ANC": ["anc", "noise cancel", "no noise cancel"],
+        "App Crashes": ["app crash", "app not working"],
+        "Uncomfortable Fit": ["uncomfortable", "fall out", "hurts"],
+        "Poor Battery": ["battery drain", "dies fast"],
+        "Bad Mic": ["mic", "microphone", "call quality"],
+        "Lag/Latency": ["lag", "latency", "delay"],
+        "Pairing Issues": ["pairing", "won't connect"],
+        "Bad Sound": ["bad sound", "tinny", "muffled"],
+        "Charging Issues": ["charging", "won't charge"],
+        "Poor Build": ["cheap", "broke", "flimsy"],
+        "Touch Controls": ["touch control", "accidental tap"],
+    }
+    total = len(reviews)
+    issues = {}
+    for issue, kws in keywords.items():
+        count = sum(1 for r in reviews
+                    if any(kw in (r.get("text","") + r.get("title","")).lower() for kw in kws))
         if count > 0:
             pct = round(count/total*100, 1)
-            kw_summary += f"{kw}: {count}/{total} ({pct}%), "
-
-    theme_summary = ""
-    for theme, td in sorted(
-        data["theme_data"].items(), key=lambda x: -x[1]["total"]
-    ):
-        pct = round(td["total"]/total*100, 1) if total > 0 else 0
-        theme_summary += (
-            f"{theme}: {td['total']} mentions ({pct}%), "
-            f"Pos={td['Positive']}, Neg={td['Negative']}. "
-        )
-
-    pos_pct = round(
-        data["sentiment"]["Positive"]/analyzed*100
-    ) if analyzed > 0 else 0
-    neg_pct = round(
-        data["sentiment"]["Negative"]/analyzed*100
-    ) if analyzed > 0 else 0
-
-    prompt = (
-        f"You are a senior VoC analyst. Analyze this data for {product_name}.\n\n"
-        f"Total Reviews: {total}\n"
-        f"Avg Rating: {data['avg_rating']}/5\n"
-        f"Sentiment: {pos_pct}% Positive, {neg_pct}% Negative\n"
-        f"Theme Data: {theme_summary}\n"
-        f"Keyword Frequency: {kw_summary}\n\n"
-        "Write a concise analysis with these sections. "
-        "Use ONLY real numbers from data above:\n\n"
-        "EXECUTIVE SUMMARY (3 sentences with actual numbers)\n\n"
-        "TOP 3 BUGS/ISSUES (with frequency from data)\n\n"
-        "TOP 3 STRENGTHS (with frequency from data)\n\n"
-        "PRODUCT TEAM: Top 3 fixes needed\n\n"
-        "MARKETING TEAM: Top 2 messaging recommendations\n\n"
-        "SUPPORT TEAM: Top 2 guides to create\n\n"
-        "Keep each section to 2-3 lines. Be specific with numbers."
-    )
-
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=800
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"AI error: {e}")
-        return "AI analysis unavailable."
+            severity = "CRITICAL" if pct > 20 else "HIGH" if pct > 10 else "MEDIUM" if pct > 5 else "LOW"
+            issues[issue] = {"count": count, "pct": f"{pct}%", "severity": severity}
+    return dict(sorted(issues.items(), key=lambda x: x[1]["count"], reverse=True))
 
 
-def metric_card(label, value, bg_color):
-    data = [[
-        Paragraph(str(value), ParagraphStyle(
-            'mv', fontSize=20, textColor=WHITE,
-            fontName='Helvetica-Bold', alignment=TA_CENTER
-        ))
-    ], [
-        Paragraph(label, ParagraphStyle(
-            'ml', fontSize=8, textColor=colors.HexColor('#cccccc'),
-            fontName='Helvetica', alignment=TA_CENTER
-        ))
-    ]]
-    t = Table(data, colWidths=[1.4*inch])
-    t.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), bg_color),
-        ('TOPPADDING', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-    ]))
-    return t
+def get_top_reviews(reviews, limit=3):
+    pos = sorted([r for r in reviews if r.get("sentiment") == "Positive"],
+                 key=lambda x: x.get("rating", 0), reverse=True)[:limit]
+    neg = sorted([r for r in reviews if r.get("sentiment") == "Negative"],
+                 key=lambda x: x.get("rating", 0))[:limit]
+    return {
+        "positive": [f"[{r['rating']}★] {r['title']}: {r['text'][:180]}" for r in pos],
+        "negative": [f"[{r['rating']}★] {r['title']}: {r['text'][:180]}" for r in neg]
+    }
 
 
-def make_cover(story, styles, today):
-    story.append(Spacer(1, 1.2*inch))
-    cover = Table([[
-        Paragraph("VOICE OF CUSTOMER", styles['CoverTitle'])
-    ], [
-        Paragraph("Intelligence Report", styles['CoverSub'])
-    ], [
-        Paragraph(
-            f"Generated: {today}  |  Master Buds 1 vs Master Buds Max",
-            styles['CoverSub']
-        )
-    ], [
-        Paragraph(
-            "Powered by AI Analysis + Real Customer Reviews",
-            ParagraphStyle(
-                'cs2', fontSize=11,
-                textColor=colors.HexColor('#aaaaaa'),
-                alignment=TA_CENTER, fontName='Helvetica-Oblique'
+def ask_groq(prompt, max_tokens=2000):
+    import time
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=max_tokens
             )
-        )
-    ]], colWidths=[6.5*inch])
-
-    cover.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), PRIMARY),
-        ('TOPPADDING', (0, 0), (-1, -1), 22),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 22),
-        ('LEFTPADDING', (0, 0), (-1, -1), 30),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 30),
-    ]))
-    story.append(cover)
-    story.append(PageBreak())
-
-
-def make_product_page(story, styles, product_name, data, ai_insights):
-    # Header
-    header = Table([[
-        Paragraph(f"  {product_name}", ParagraphStyle(
-            'ph', fontSize=15, textColor=WHITE,
-            fontName='Helvetica-Bold'
-        ))
-    ]], colWidths=[6.5*inch])
-    header.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), ACCENT),
-        ('TOPPADDING', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-        ('LEFTPADDING', (0, 0), (-1, -1), 15),
-    ]))
-    story.append(header)
-    story.append(Spacer(1, 0.15*inch))
-
-    # Metric Cards
-    total = data["total"]
-    analyzed = data["analyzed"]
-    pos_pct = round(
-        data["sentiment"]["Positive"]/analyzed*100
-    ) if analyzed > 0 else 0
-    neg_pct = round(
-        data["sentiment"]["Negative"]/analyzed*100
-    ) if analyzed > 0 else 0
-
-    cards = Table([[
-        metric_card("Total Reviews", total, PRIMARY),
-        metric_card("Avg Rating", f"{data['avg_rating']}*", ACCENT),
-        metric_card("Positive %", f"{pos_pct}%", SUCCESS),
-        metric_card("Negative %", f"{neg_pct}%", DANGER),
-    ]], colWidths=[1.5*inch]*4)
-    cards.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 4),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-    ]))
-    story.append(cards)
-    story.append(Spacer(1, 0.2*inch))
-
-    # AI Insights Section
-    story.append(Paragraph("AI-Generated Insights", styles['SubHeader']))
-    ai_box = Table([[
-        Paragraph(ai_insights, styles['AIText'])
-    ]], colWidths=[6.3*inch])
-    ai_box.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f0f4ff')),
-        ('TOPPADDING', (0, 0), (-1, -1), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
-        ('LEFTPADDING', (0, 0), (-1, -1), 15),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 15),
-        ('BOX', (0, 0), (-1, -1), 1, ACCENT),
-    ]))
-    story.append(ai_box)
-    story.append(Spacer(1, 0.2*inch))
-
-    # Theme Table
-    if data["theme_data"]:
-        story.append(Paragraph("Theme Analysis", styles['SubHeader']))
-        theme_rows = [[
-            Paragraph("Theme", ParagraphStyle(
-                'th', fontSize=10, fontName='Helvetica-Bold', textColor=WHITE
-            )),
-            Paragraph("Mentions", ParagraphStyle(
-                'th', fontSize=10, fontName='Helvetica-Bold',
-                textColor=WHITE, alignment=TA_CENTER
-            )),
-            Paragraph("Positive", ParagraphStyle(
-                'th', fontSize=10, fontName='Helvetica-Bold',
-                textColor=WHITE, alignment=TA_CENTER
-            )),
-            Paragraph("Negative", ParagraphStyle(
-                'th', fontSize=10, fontName='Helvetica-Bold',
-                textColor=WHITE, alignment=TA_CENTER
-            )),
-            Paragraph("Status", ParagraphStyle(
-                'th', fontSize=10, fontName='Helvetica-Bold',
-                textColor=WHITE, alignment=TA_CENTER
-            ))
-        ]]
-
-        for theme, td in sorted(
-            data["theme_data"].items(), key=lambda x: -x[1]["total"]
-        ):
-            pct = round(td["total"]/total*100, 1) if total > 0 else 0
-            pos = td["Positive"]
-            neg = td["Negative"]
-            if neg > pos:
-                status, sc = "PROBLEM", DANGER
-            elif pos > neg * 2:
-                status, sc = "STRENGTH", SUCCESS
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            if "429" in str(e):
+                print(f"    Rate limit - waiting 60s...")
+                time.sleep(60)
             else:
-                status, sc = "MIXED", WARNING
+                raise e
+    return ""
 
-            theme_rows.append([
-                Paragraph(theme, ParagraphStyle(
-                    'tc', fontSize=9, fontName='Helvetica'
-                )),
-                Paragraph(f"{td['total']} ({pct}%)", ParagraphStyle(
-                    'tc', fontSize=9, alignment=TA_CENTER
-                )),
-                Paragraph(str(pos), ParagraphStyle(
-                    'tc', fontSize=9, textColor=SUCCESS,
-                    alignment=TA_CENTER, fontName='Helvetica-Bold'
-                )),
-                Paragraph(str(neg), ParagraphStyle(
-                    'tc', fontSize=9, textColor=DANGER,
-                    alignment=TA_CENTER, fontName='Helvetica-Bold'
-                )),
-                Paragraph(status, ParagraphStyle(
-                    'tc', fontSize=8, textColor=sc,
-                    alignment=TA_CENTER, fontName='Helvetica-Bold'
-                ))
+
+# ─── GROQ ANALYSIS ───
+
+def get_groq_insights(product_name, stats, themes, issues, top_reviews):
+    prompt = f"""You are a VoC analyst for Noise. Analyze {product_name} data.
+
+Stats: {json.dumps(stats)}
+Themes: {json.dumps({t: {k:v for k,v in d.items() if k != 'quotes'} for t,d in themes.items()})}
+Issues: {json.dumps(issues)}
+Top Reviews: {json.dumps(top_reviews)}
+
+Give EXACTLY (use real numbers only):
+
+PRODUCT_ACTIONS:
+1. [action with data evidence]
+2. [action with data evidence]
+3. [action with data evidence]
+4. [action with data evidence]
+5. [action with data evidence]
+
+MARKETING_ACTIONS:
+1. [action with data evidence]
+2. [action with data evidence]
+3. [action with data evidence]
+
+SUPPORT_ACTIONS:
+1. [action with data evidence]
+2. [action with data evidence]
+3. [action with data evidence]
+
+TOP_RECOMMENDATIONS:
+1. [recommendation | evidence | impact]
+2. [recommendation | evidence | impact]
+3. [recommendation | evidence | impact]
+4. [recommendation | evidence | impact]
+5. [recommendation | evidence | impact]
+
+HEALTH_SUMMARY:
+[2-3 sentences on product health with numbers]"""
+
+    return ask_groq(prompt, 1500)
+
+
+def get_competitor_insights(all_data):
+    summaries = {}
+    for pid, pname, reviews in all_data:
+        analyzed = [r for r in reviews if r.get("sentiment")]
+        if analyzed:
+            summaries[pname] = {
+                "stats": get_stats(analyzed),
+                "themes": {t: {"health": d["health"], "pos": d["Positive"], "neg": d["Negative"]}
+                          for t, d in get_theme_data(analyzed).items()},
+                "top_issues": list(get_issues(analyzed).keys())[:5]
+            }
+
+    prompt = f"""Competitor analysis for Noise. Data:
+{json.dumps(summaries, indent=2)}
+
+Give EXACTLY:
+
+WINNER_TABLE:
+[Factor] | [Product1 score] | [Product2 score] | [Winner]
+(do this for: Overall, Sound Quality, ANC, Battery, Comfort, App, Build, Price)
+
+PRODUCT1_ADVANTAGES:
+1. [advantage with data]
+2. [advantage with data]
+3. [advantage with data]
+
+PRODUCT2_ADVANTAGES:
+1. [advantage with data]
+2. [advantage with data]
+3. [advantage with data]
+
+COMMON_WEAKNESSES:
+1. [shared weakness]
+2. [shared weakness]
+3. [shared weakness]
+
+GAPS_TO_WIN:
+1. [opportunity with data]
+2. [opportunity with data]
+3. [opportunity with data]
+
+CHURN_RISK:
+[Which product and why - 2 sentences]"""
+
+    return ask_groq(prompt, 1500)
+
+
+# ─── PDF BUILDER ───
+
+def build_pdf(global_data, weekly_data=None):
+    os.makedirs("reports", exist_ok=True)
+    filename = f"reports/voc_report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+    doc = SimpleDocTemplate(filename, pagesize=A4,
+                            rightMargin=40, leftMargin=40,
+                            topMargin=40, bottomMargin=40)
+
+    styles = getSampleStyleSheet()
+    elements = []
+
+    # Custom styles
+    title_style = ParagraphStyle("Title", fontSize=28, textColor=white,
+                                  spaceAfter=6, alignment=TA_CENTER,
+                                  fontName="Helvetica-Bold")
+    h1 = ParagraphStyle("H1", fontSize=16, textColor=ACCENT,
+                         spaceAfter=8, spaceBefore=16, fontName="Helvetica-Bold")
+    h2 = ParagraphStyle("H2", fontSize=13, textColor=ACCENT2,
+                         spaceAfter=6, spaceBefore=10, fontName="Helvetica-Bold")
+    body = ParagraphStyle("Body", fontSize=9, textColor=black,
+                           spaceAfter=4, leading=14)
+    small = ParagraphStyle("Small", fontSize=8, textColor=HexColor("#555555"),
+                            spaceAfter=3, leading=12, leftIndent=10)
+    quote_style = ParagraphStyle("Quote", fontSize=8, textColor=HexColor("#333333"),
+                                  spaceAfter=3, leading=12, leftIndent=15,
+                                  borderPad=4)
+
+    def add_cover():
+        cover_data = [[Paragraph(
+            f'<font color="white"><b>🎧 Voice of Customer Intelligence Report</b></font>',
+            ParagraphStyle("Cover", fontSize=22, textColor=white,
+                           alignment=TA_CENTER, fontName="Helvetica-Bold"))]]
+        cover = Table(cover_data, colWidths=[515])
+        cover.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,-1), DARK),
+            ("TOPPADDING", (0,0), (-1,-1), 30),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 30),
+            ("LEFTPADDING", (0,0), (-1,-1), 20),
+            ("RIGHTPADDING", (0,0), (-1,-1), 20),
+            ("ROUNDEDCORNERS", [8]),
+        ]))
+        elements.append(cover)
+        elements.append(Spacer(1, 10))
+
+        today = datetime.now().strftime("%B %d, %Y")
+        products_str = ", ".join([d["name"] for d in global_data])
+        total = sum(d["stats"]["total"] for d in global_data if d.get("stats"))
+
+        meta_data = [
+            [Paragraph(f"<b>Date:</b> {today}", body),
+             Paragraph(f"<b>Products:</b> {products_str}", body),
+             Paragraph(f"<b>Total Reviews:</b> {total}", body)]
+        ]
+        meta = Table(meta_data, colWidths=[170, 230, 115])
+        meta.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,-1), LIGHT),
+            ("TOPPADDING", (0,0), (-1,-1), 8),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 8),
+            ("LEFTPADDING", (0,0), (-1,-1), 10),
+        ]))
+        elements.append(meta)
+        elements.append(Spacer(1, 20))
+
+    def add_stats_cards(stats, product_name):
+        elements.append(Paragraph(f"📊 {product_name} — Health Snapshot", h1))
+
+        avg = stats.get("avg_rating", 0)
+        health_color = SUCCESS if avg >= 4 else WARNING if avg >= 3 else DANGER
+
+        cards = [
+            [Paragraph(f'<b>{stats.get("total", 0)}</b>', ParagraphStyle("Card", fontSize=22, textColor=ACCENT, alignment=TA_CENTER, fontName="Helvetica-Bold")),
+             Paragraph(f'<b>{stats.get("avg_rating", 0)}/5</b>', ParagraphStyle("Card", fontSize=22, textColor=health_color, alignment=TA_CENTER, fontName="Helvetica-Bold")),
+             Paragraph(f'<b>{stats.get("positive_pct", "0%")}</b>', ParagraphStyle("Card", fontSize=22, textColor=SUCCESS, alignment=TA_CENTER, fontName="Helvetica-Bold")),
+             Paragraph(f'<b>{stats.get("negative_pct", "0%")}</b>', ParagraphStyle("Card", fontSize=22, textColor=DANGER, alignment=TA_CENTER, fontName="Helvetica-Bold"))],
+            [Paragraph("Total Reviews", ParagraphStyle("CardLabel", fontSize=8, textColor=HexColor("#666"), alignment=TA_CENTER)),
+             Paragraph("Avg Rating", ParagraphStyle("CardLabel", fontSize=8, textColor=HexColor("#666"), alignment=TA_CENTER)),
+             Paragraph("Positive", ParagraphStyle("CardLabel", fontSize=8, textColor=HexColor("#666"), alignment=TA_CENTER)),
+             Paragraph("Negative", ParagraphStyle("CardLabel", fontSize=8, textColor=HexColor("#666"), alignment=TA_CENTER))]
+        ]
+        t = Table(cards, colWidths=[128, 128, 128, 128])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,-1), LIGHT),
+            ("TOPPADDING", (0,0), (-1,-1), 12),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 8),
+            ("GRID", (0,0), (-1,-1), 0.5, HexColor("#dddddd")),
+            ("ROUNDEDCORNERS", [6]),
+        ]))
+        elements.append(t)
+        elements.append(Spacer(1, 12))
+
+    def add_theme_table(themes):
+        elements.append(Paragraph("🏷️ Theme-Wise Analysis", h2))
+
+        header = [
+            Paragraph("<b>Theme</b>", ParagraphStyle("TH", fontSize=8, textColor=white, fontName="Helvetica-Bold")),
+            Paragraph("<b>✅ Pos</b>", ParagraphStyle("TH", fontSize=8, textColor=white, fontName="Helvetica-Bold", alignment=TA_CENTER)),
+            Paragraph("<b>❌ Neg</b>", ParagraphStyle("TH", fontSize=8, textColor=white, fontName="Helvetica-Bold", alignment=TA_CENTER)),
+            Paragraph("<b>➖ Neu</b>", ParagraphStyle("TH", fontSize=8, textColor=white, fontName="Helvetica-Bold", alignment=TA_CENTER)),
+            Paragraph("<b>% Reviews</b>", ParagraphStyle("TH", fontSize=8, textColor=white, fontName="Helvetica-Bold", alignment=TA_CENTER)),
+            Paragraph("<b>Health</b>", ParagraphStyle("TH", fontSize=8, textColor=white, fontName="Helvetica-Bold", alignment=TA_CENTER)),
+        ]
+        rows = [header]
+        row_colors = []
+
+        for i, (theme, data) in enumerate(themes.items()):
+            health = data["health"]
+            health_color = SUCCESS if health == "STRENGTH" else DANGER if health == "PROBLEM AREA" else WARNING if health == "MIXED" else HexColor("#aaaaaa")
+            health_symbol = "🟢 STRENGTH" if health == "STRENGTH" else "🔴 PROBLEM" if health == "PROBLEM AREA" else "🟡 MIXED" if health == "MIXED" else "⚪ NO DATA"
+
+            row = [
+                Paragraph(theme, ParagraphStyle("TD", fontSize=8)),
+                Paragraph(str(data["Positive"]), ParagraphStyle("TD", fontSize=8, alignment=TA_CENTER, textColor=HexColor("#27ae60"))),
+                Paragraph(str(data["Negative"]), ParagraphStyle("TD", fontSize=8, alignment=TA_CENTER, textColor=DANGER)),
+                Paragraph(str(data["Neutral"]), ParagraphStyle("TD", fontSize=8, alignment=TA_CENTER)),
+                Paragraph(data["pct"], ParagraphStyle("TD", fontSize=8, alignment=TA_CENTER)),
+                Paragraph(health_symbol, ParagraphStyle("TD", fontSize=7, alignment=TA_CENTER)),
+            ]
+            rows.append(row)
+            row_colors.append(HexColor("#f9f9f9") if i % 2 == 0 else white)
+
+        t = Table(rows, colWidths=[130, 55, 55, 55, 70, 150])
+        style = [
+            ("BACKGROUND", (0,0), (-1,0), DARK),
+            ("TOPPADDING", (0,0), (-1,-1), 6),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+            ("LEFTPADDING", (0,0), (-1,-1), 6),
+            ("GRID", (0,0), (-1,-1), 0.3, HexColor("#dddddd")),
+        ]
+        for i, color in enumerate(row_colors):
+            style.append(("BACKGROUND", (0, i+1), (-1, i+1), color))
+        t.setStyle(TableStyle(style))
+        elements.append(t)
+        elements.append(Spacer(1, 8))
+
+        # Quotes per theme
+        elements.append(Paragraph("💬 Theme Quotes", h2))
+        for theme, data in themes.items():
+            if data["quotes"]:
+                elements.append(Paragraph(f"<b>{theme}:</b>", small))
+                elements.append(Paragraph(f"<i>\"{data['quotes'][0]}\"</i>", quote_style))
+
+        elements.append(Spacer(1, 8))
+
+    def add_issues_table(issues):
+        elements.append(Paragraph("🔴 Top Issues — Severity Ranked", h2))
+
+        header = [
+            Paragraph("<b>Issue</b>", ParagraphStyle("TH", fontSize=8, textColor=white, fontName="Helvetica-Bold")),
+            Paragraph("<b>Count</b>", ParagraphStyle("TH", fontSize=8, textColor=white, fontName="Helvetica-Bold", alignment=TA_CENTER)),
+            Paragraph("<b>%</b>", ParagraphStyle("TH", fontSize=8, textColor=white, fontName="Helvetica-Bold", alignment=TA_CENTER)),
+            Paragraph("<b>Severity</b>", ParagraphStyle("TH", fontSize=8, textColor=white, fontName="Helvetica-Bold", alignment=TA_CENTER)),
+        ]
+        rows = [header]
+        for issue, data in issues.items():
+            sev = data["severity"]
+            sev_color = DANGER if sev == "CRITICAL" else WARNING if sev == "HIGH" else HexColor("#f1c40f") if sev == "MEDIUM" else SUCCESS
+            rows.append([
+                Paragraph(issue, ParagraphStyle("TD", fontSize=8)),
+                Paragraph(str(data["count"]), ParagraphStyle("TD", fontSize=8, alignment=TA_CENTER)),
+                Paragraph(data["pct"], ParagraphStyle("TD", fontSize=8, alignment=TA_CENTER)),
+                Paragraph(sev, ParagraphStyle("TD", fontSize=8, alignment=TA_CENTER, textColor=sev_color, fontName="Helvetica-Bold")),
             ])
 
-        t = Table(
-            theme_rows,
-            colWidths=[2.2*inch, 1.2*inch, 1*inch, 1*inch, 1.1*inch]
-        )
+        t = Table(rows, colWidths=[230, 60, 60, 165])
         t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), PRIMARY),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [LIGHT, WHITE]),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#dddddd')),
-            ('TOPPADDING', (0, 0), (-1, -1), 6),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-            ('LEFTPADDING', (0, 0), (-1, -1), 8),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ("BACKGROUND", (0,0), (-1,0), DARK),
+            ("TOPPADDING", (0,0), (-1,-1), 6),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+            ("LEFTPADDING", (0,0), (-1,-1), 6),
+            ("GRID", (0,0), (-1,-1), 0.3, HexColor("#dddddd")),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [LIGHT, white]),
         ]))
-        story.append(t)
-        story.append(Spacer(1, 0.2*inch))
+        elements.append(t)
+        elements.append(Spacer(1, 8))
 
-    # Issues Table
-    story.append(Paragraph("Issue Frequency Analysis", styles['SubHeader']))
-    issue_rows = [[
-        Paragraph("Issue", ParagraphStyle(
-            'ih', fontSize=10, fontName='Helvetica-Bold', textColor=WHITE
-        )),
-        Paragraph("Mentions", ParagraphStyle(
-            'ih', fontSize=10, fontName='Helvetica-Bold',
-            textColor=WHITE, alignment=TA_CENTER
-        )),
-        Paragraph("% of Reviews", ParagraphStyle(
-            'ih', fontSize=10, fontName='Helvetica-Bold',
-            textColor=WHITE, alignment=TA_CENTER
-        )),
-        Paragraph("Severity", ParagraphStyle(
-            'ih', fontSize=10, fontName='Helvetica-Bold',
-            textColor=WHITE, alignment=TA_CENTER
-        ))
-    ]]
+    def add_reviews(top_reviews):
+        elements.append(Paragraph("⭐ Top Customer Reviews", h2))
 
-    for kw, count in sorted(
-        data["keywords"].items(), key=lambda x: -x[1]
-    )[:10]:
-        if count == 0:
-            continue
-        pct = round(count/total*100, 1)
-        if pct > 20:
-            sev, sc = "CRITICAL", DANGER
-        elif pct > 10:
-            sev, sc = "HIGH", WARNING
-        elif pct > 5:
-            sev, sc = "MEDIUM", colors.HexColor('#3498db')
-        else:
-            sev, sc = "LOW", SUCCESS
+        elements.append(Paragraph("✅ Best Reviews:", small))
+        for r in top_reviews["positive"]:
+            elements.append(Paragraph(f"<i>\"{r}\"</i>", quote_style))
 
-        issue_rows.append([
-            Paragraph(kw.title(), ParagraphStyle(
-                'ic', fontSize=9, fontName='Helvetica'
-            )),
-            Paragraph(str(count), ParagraphStyle(
-                'ic', fontSize=9, alignment=TA_CENTER
-            )),
-            Paragraph(f"{pct}%", ParagraphStyle(
-                'ic', fontSize=9, alignment=TA_CENTER,
-                fontName='Helvetica-Bold'
-            )),
-            Paragraph(sev, ParagraphStyle(
-                'ic', fontSize=8, textColor=sc,
-                alignment=TA_CENTER, fontName='Helvetica-Bold'
-            ))
-        ])
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph("❌ Worst Reviews:", small))
+        for r in top_reviews["negative"]:
+            elements.append(Paragraph(f"<i>\"{r}\"</i>", quote_style))
+        elements.append(Spacer(1, 8))
 
-    t2 = Table(
-        issue_rows,
-        colWidths=[2.5*inch, 1.3*inch, 1.3*inch, 1.4*inch]
-    )
-    t2.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), HIGHLIGHT),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [LIGHT, WHITE]),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#dddddd')),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-    ]))
-    story.append(t2)
-    story.append(Spacer(1, 0.2*inch))
+    def add_actions(insights, product_name):
+        sections = {
+            "PRODUCT_ACTIONS": ("🛠️ Product Team Actions", ACCENT2),
+            "MARKETING_ACTIONS": ("📣 Marketing Team Actions", HexColor("#8e44ad")),
+            "SUPPORT_ACTIONS": ("🎧 Support Team Actions", HexColor("#16a085")),
+            "TOP_RECOMMENDATIONS": ("🏆 Top 5 Recommendations", ACCENT),
+            "HEALTH_SUMMARY": ("💡 Health Summary", DARK),
+        }
 
-    # Customer Quotes
-    story.append(Paragraph("Customer Voice", styles['SubHeader']))
-    if data["pos_reviews"]:
-        story.append(Paragraph("TOP POSITIVE REVIEWS", ParagraphStyle(
-            'pl', fontSize=9, fontName='Helvetica-Bold', textColor=SUCCESS
-        )))
-        for r in data["pos_reviews"]:
-            story.append(Paragraph(
-                f'"{r["title"]}" — {r["text"][:180]}...',
-                styles['Quote2']
-            ))
-            story.append(Paragraph(
-                f"Rating: {r['rating']}*",
-                ParagraphStyle(
-                    'rl', fontSize=8, textColor=SUCCESS, leftIndent=20
-                )
-            ))
+        current_section = None
+        lines = insights.split("\n")
+        action_items = {}
+        current_key = None
 
-    if data["neg_reviews"]:
-        story.append(Spacer(1, 0.1*inch))
-        story.append(Paragraph("TOP NEGATIVE REVIEWS", ParagraphStyle(
-            'nl', fontSize=9, fontName='Helvetica-Bold', textColor=DANGER
-        )))
-        for r in data["neg_reviews"]:
-            story.append(Paragraph(
-                f'"{r["title"]}" — {r["text"][:180]}...',
-                styles['Quote2']
-            ))
-            story.append(Paragraph(
-                f"Rating: {r['rating']}*",
-                ParagraphStyle(
-                    'rl', fontSize=8, textColor=DANGER, leftIndent=20
-                )
-            ))
+        for line in lines:
+            line = line.strip()
+            for key in sections:
+                if line.startswith(key + ":"):
+                    current_key = key
+                    action_items[current_key] = []
+                    break
+            else:
+                if current_key and line and not line.endswith(":"):
+                    action_items[current_key] = action_items.get(current_key, []) + [line]
 
+        for key, (title, color) in sections.items():
+            if key in action_items and action_items[key]:
+                elements.append(Paragraph(title, ParagraphStyle("H2c", fontSize=12,
+                    textColor=color, spaceAfter=6, spaceBefore=10, fontName="Helvetica-Bold")))
+                for item in action_items[key]:
+                    if item.strip():
+                        elements.append(Paragraph(f"• {item}", body))
+                elements.append(Spacer(1, 6))
 
-def make_comparison_page(story, styles, data1, data2, ai_comparison):
-    story.append(PageBreak())
+    def add_competitor(competitor_insights, names):
+        elements.append(HRFlowable(width="100%", thickness=2, color=ACCENT))
+        elements.append(Spacer(1, 10))
+        elements.append(Paragraph("🏆 Competitor Gap Analysis", h1))
 
-    header = Table([[
-        Paragraph("  HEAD TO HEAD COMPARISON", ParagraphStyle(
-            'hh', fontSize=15, textColor=WHITE, fontName='Helvetica-Bold'
-        ))
-    ]], colWidths=[6.5*inch])
-    header.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), HIGHLIGHT),
-        ('TOPPADDING', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
-        ('LEFTPADDING', (0, 0), (-1, -1), 15),
-    ]))
-    story.append(header)
-    story.append(Spacer(1, 0.2*inch))
+        lines = competitor_insights.split("\n")
+        current_section = None
+        table_rows = []
+        in_table = False
 
-    # AI Comparison
-    story.append(Paragraph("AI Comparison Analysis", styles['SubHeader']))
-    ai_box = Table([[
-        Paragraph(ai_comparison, styles['AIText'])
-    ]], colWidths=[6.3*inch])
-    ai_box.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#fff5f5')),
-        ('TOPPADDING', (0, 0), (-1, -1), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
-        ('LEFTPADDING', (0, 0), (-1, -1), 15),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 15),
-        ('BOX', (0, 0), (-1, -1), 1, HIGHLIGHT),
-    ]))
-    story.append(ai_box)
-    story.append(Spacer(1, 0.2*inch))
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
 
-    # Comparison Table
-    story.append(Paragraph("Feature by Feature", styles['SubHeader']))
-    total1 = data1["total"]
-    total2 = data2["total"]
-    ana1 = data1["analyzed"]
-    ana2 = data2["analyzed"]
-    pos_pct1 = round(data1["sentiment"]["Positive"]/ana1*100) if ana1 > 0 else 0
-    pos_pct2 = round(data2["sentiment"]["Positive"]/ana2*100) if ana2 > 0 else 0
+            if line.startswith("WINNER_TABLE:"):
+                elements.append(Paragraph("📊 Head-to-Head Comparison", h2))
+                in_table = True
+                table_rows = []
+            elif any(line.startswith(s) for s in ["PRODUCT1_ADVANTAGES:", "PRODUCT2_ADVANTAGES:",
+                                                    "COMMON_WEAKNESSES:", "GAPS_TO_WIN:", "CHURN_RISK:"]):
+                if in_table and table_rows:
+                    # Render table
+                    header = [Paragraph("<b>Factor</b>", ParagraphStyle("TH", fontSize=8, textColor=white, fontName="Helvetica-Bold"))]
+                    for n in names:
+                        header.append(Paragraph(f"<b>{n[:15]}</b>", ParagraphStyle("TH", fontSize=7, textColor=white, fontName="Helvetica-Bold", alignment=TA_CENTER)))
+                    header.append(Paragraph("<b>Winner</b>", ParagraphStyle("TH", fontSize=8, textColor=white, fontName="Helvetica-Bold", alignment=TA_CENTER)))
 
-    def winner_style(v1, v2):
-        if v1 > v2:
-            return "Buds 1 Wins", SUCCESS
-        elif v2 > v1:
-            return "Buds Max Wins", ACCENT
-        return "Tie", GRAY
+                    t_rows = [header]
+                    for tr in table_rows:
+                        parts = [p.strip() for p in tr.split("|")]
+                        if len(parts) >= 2:
+                            row = [Paragraph(parts[0], ParagraphStyle("TD", fontSize=8))]
+                            for p in parts[1:]:
+                                row.append(Paragraph(p, ParagraphStyle("TD", fontSize=7, alignment=TA_CENTER)))
+                            while len(row) < len(header):
+                                row.append(Paragraph("-", ParagraphStyle("TD", fontSize=7, alignment=TA_CENTER)))
+                            t_rows.append(row[:len(header)])
 
-    rows = [[
-        Paragraph("Metric", ParagraphStyle(
-            'ch', fontSize=10, fontName='Helvetica-Bold', textColor=WHITE
-        )),
-        Paragraph("Master Buds 1", ParagraphStyle(
-            'ch', fontSize=10, fontName='Helvetica-Bold',
-            textColor=WHITE, alignment=TA_CENTER
-        )),
-        Paragraph("Master Buds Max", ParagraphStyle(
-            'ch', fontSize=10, fontName='Helvetica-Bold',
-            textColor=WHITE, alignment=TA_CENTER
-        )),
-        Paragraph("Winner", ParagraphStyle(
-            'ch', fontSize=10, fontName='Helvetica-Bold',
-            textColor=WHITE, alignment=TA_CENTER
-        ))
-    ]]
+                    col_w = [150] + [120 // len(names)] * len(names) + [80]
+                    ct = Table(t_rows, colWidths=col_w)
+                    ct.setStyle(TableStyle([
+                        ("BACKGROUND", (0,0), (-1,0), DARK),
+                        ("TOPPADDING", (0,0), (-1,-1), 5),
+                        ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+                        ("LEFTPADDING", (0,0), (-1,-1), 5),
+                        ("GRID", (0,0), (-1,-1), 0.3, HexColor("#dddddd")),
+                        ("ROWBACKGROUNDS", (0,1), (-1,-1), [LIGHT, white]),
+                    ]))
+                    elements.append(ct)
+                    elements.append(Spacer(1, 8))
+                    in_table = False
 
-    metrics = [
-        ("Avg Rating", data1["avg_rating"], data2["avg_rating"]),
-        ("Positive Sentiment", pos_pct1, pos_pct2),
-        ("Total Reviews", total1, total2),
-    ]
+                section_titles = {
+                    "PRODUCT1_ADVANTAGES:": f"💪 {names[0] if names else 'Product 1'} Leads",
+                    "PRODUCT2_ADVANTAGES:": f"💪 {names[1] if len(names)>1 else 'Product 2'} Leads",
+                    "COMMON_WEAKNESSES:": "⚠️ Common Weaknesses",
+                    "GAPS_TO_WIN:": "🚀 Gaps To Win",
+                    "CHURN_RISK:": "⚡ Churn Risk",
+                }
+                for k, v in section_titles.items():
+                    if line.startswith(k):
+                        elements.append(Paragraph(v, h2))
+                        break
+                current_section = line
 
-    all_themes = set(
-        list(data1["theme_data"].keys()) +
-        list(data2["theme_data"].keys())
-    )
-    for theme in sorted(all_themes):
-        td1 = data1["theme_data"].get(theme, {})
-        td2 = data2["theme_data"].get(theme, {})
-        metrics.append((
-            theme,
-            td1.get("Positive", 0),
-            td2.get("Positive", 0)
-        ))
+            elif in_table and "|" in line:
+                table_rows.append(line)
+            elif line and not line.endswith(":"):
+                if line.startswith(("1.", "2.", "3.", "4.", "5.")):
+                    elements.append(Paragraph(f"• {line[2:].strip()}", body))
+                else:
+                    elements.append(Paragraph(line, body))
 
-    for metric, v1, v2 in metrics:
-        w, wc = winner_style(v1, v2)
-        rows.append([
-            Paragraph(metric, ParagraphStyle(
-                'cc', fontSize=9, fontName='Helvetica'
-            )),
-            Paragraph(str(v1), ParagraphStyle(
-                'cc', fontSize=9, alignment=TA_CENTER,
-                fontName='Helvetica-Bold'
-            )),
-            Paragraph(str(v2), ParagraphStyle(
-                'cc', fontSize=9, alignment=TA_CENTER,
-                fontName='Helvetica-Bold'
-            )),
-            Paragraph(w, ParagraphStyle(
-                'cc', fontSize=9, textColor=wc,
-                alignment=TA_CENTER, fontName='Helvetica-Bold'
-            ))
-        ])
+    # ─── BUILD PDF ───
 
-    t = Table(
-        rows,
-        colWidths=[2.2*inch, 1.4*inch, 1.5*inch, 1.4*inch]
-    )
-    t.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), PRIMARY),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [LIGHT, WHITE]),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#dddddd')),
-        ('TOPPADDING', (0, 0), (-1, -1), 7),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
-        ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-    ]))
-    story.append(t)
+    add_cover()
+
+    product_names = []
+
+    for prod_data in global_data:
+        pname = prod_data["name"]
+        product_names.append(pname)
+        stats = prod_data["stats"]
+        themes = prod_data["themes"]
+        issues = prod_data["issues"]
+        top_reviews = prod_data["top_reviews"]
+        insights = prod_data["insights"]
+
+        elements.append(HRFlowable(width="100%", thickness=2, color=ACCENT))
+        elements.append(Spacer(1, 10))
+
+        add_stats_cards(stats, pname)
+        add_theme_table(themes)
+        add_issues_table(issues)
+        add_reviews(top_reviews)
+        add_actions(insights, pname)
+
+    # Competitor section
+    if len(global_data) >= 2 and "competitor" in global_data[0]:
+        add_competitor(global_data[0]["competitor"], product_names)
+
+    # Weekly section
+    if weekly_data:
+        elements.append(HRFlowable(width="100%", thickness=2, color=SUCCESS))
+        elements.append(Spacer(1, 10))
+        elements.append(Paragraph(f"📅 Weekly Delta Report — {weekly_data['week']}", h1))
+        elements.append(Paragraph(f"New Reviews This Week: {weekly_data['stats'].get('total', 0)}", body))
+        elements.append(Spacer(1, 8))
+
+        add_stats_cards(weekly_data["stats"], "This Week")
+        add_theme_table(weekly_data["themes"])
+        add_issues_table(weekly_data["issues"])
+        add_reviews(weekly_data["top_reviews"])
+        add_actions(weekly_data["insights"], "Weekly")
+
+    doc.build(elements)
+    print(f"\n✅ PDF saved: {filename}")
+    return filename
 
 
-def get_comparison_insights(data1, data2):
-    print("Getting AI comparison insights...")
-    total1 = data1["total"]
-    total2 = data2["total"]
-    ana1 = data1["analyzed"]
-    ana2 = data2["analyzed"]
-    pos_pct1 = round(data1["sentiment"]["Positive"]/ana1*100) if ana1 > 0 else 0
-    pos_pct2 = round(data2["sentiment"]["Positive"]/ana2*100) if ana2 > 0 else 0
+# ─── MAIN ───
 
-    prompt = (
-        "Compare these two products as a VoC analyst:\n\n"
-        f"Master Buds 1: {total1} reviews, avg {data1['avg_rating']}/5, "
-        f"{pos_pct1}% positive\n"
-        f"Themes: {json.dumps({k: v['total'] for k,v in data1['theme_data'].items()})}\n\n"
-        f"Master Buds Max: {total2} reviews, avg {data2['avg_rating']}/5, "
-        f"{pos_pct2}% positive\n"
-        f"Themes: {json.dumps({k: v['total'] for k,v in data2['theme_data'].items()})}\n\n"
-        "Write a concise comparison with:\n"
-        "OVERALL WINNER (with reason and data)\n"
-        "WHAT BUDS 1 DOES BETTER (2 points with data)\n"
-        "WHAT BUDS MAX DOES BETTER (2 points with data)\n"
-        "COMMON PROBLEMS ACROSS BOTH (2 points)\n"
-        "TOP 3 COMBINED RECOMMENDATIONS\n\n"
-        "Keep each section to 2 lines. Use real numbers only."
-    )
+def generate_full_pdf():
+    print("=" * 55)
+    print("VocBot — Generating PDF Report via Groq + ReportLab")
+    print("=" * 55)
 
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=600
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"AI error: {e}")
-        return "AI comparison unavailable."
+    products = get_products()
+    if not products:
+        print("No products in DB!")
+        return
 
-
-def generate_pdf():
-    print("="*50)
-    print("Generating Beautiful AI-Powered PDF Report...")
-    print("="*50)
-
-    os.makedirs("reports", exist_ok=True)
     today = datetime.now().strftime("%Y-%m-%d")
-    filename = f"reports/voc_report_{datetime.now().strftime('%Y%m%d')}.pdf"
+    global_data = []
+    all_products_for_competitor = []
 
-    doc = SimpleDocTemplate(
-        filename, pagesize=A4,
-        rightMargin=1.5*cm, leftMargin=1.5*cm,
-        topMargin=1.5*cm, bottomMargin=1.5*cm
-    )
+    for product_id, product_name in products:
+        reviews = get_all_reviews(product_id)
+        analyzed = [r for r in reviews if r.get("sentiment")]
+        if not analyzed:
+            print(f"  {product_name}: No analyzed reviews — skipping")
+            continue
 
-    styles = get_styles()
-    story = []
+        print(f"\n📦 Processing {product_name} ({len(analyzed)} reviews)...")
 
-    make_cover(story, styles, today)
+        stats = get_stats(analyzed)
+        themes = get_theme_data(analyzed)
+        issues = get_issues(analyzed)
+        top_reviews = get_top_reviews(analyzed)
 
-    print("Loading data...")
-    data1 = get_data("master_buds_1")
-    data2 = get_data("master_buds_max")
+        print(f"  Getting Groq insights...")
+        insights = get_groq_insights(product_name, stats, themes, issues, top_reviews)
 
-    ai1 = get_ai_insights("Master Buds 1 (EarFun)", data1)
-    ai2 = get_ai_insights("Master Buds Max (Apple AirPods)", data2)
-    ai_comp = get_comparison_insights(data1, data2)
+        prod_data = {
+            "name": product_name,
+            "stats": stats,
+            "themes": themes,
+            "issues": issues,
+            "top_reviews": top_reviews,
+            "insights": insights,
+        }
+        global_data.append(prod_data)
+        all_products_for_competitor.append((product_id, product_name, analyzed))
 
-    make_product_page(story, styles, "Master Buds 1 (EarFun)", data1, ai1)
-    story.append(PageBreak())
-    make_product_page(
-        story, styles, "Master Buds Max (Apple AirPods)", data2, ai2
-    )
-    make_comparison_page(story, styles, data1, data2, ai_comp)
+    # Competitor analysis
+    if len(all_products_for_competitor) >= 2:
+        print("\n🏆 Getting competitor analysis...")
+        competitor_insights = get_competitor_insights(all_products_for_competitor)
+        if global_data:
+            global_data[0]["competitor"] = competitor_insights
 
-    doc.build(story)
+    # Weekly data
+    weekly_data = None
+    weekly_reviews = get_weekly_reviews()
+    weekly_analyzed = [r for r in weekly_reviews if r.get("sentiment")] if weekly_reviews else []
 
-    print(f"\nPDF saved: {filename}")
-    print("Open from Finder: Desktop/voc-agent/reports/")
+    if weekly_analyzed:
+        print(f"\n📅 Processing weekly delta ({len(weekly_analyzed)} reviews)...")
+        w_stats = get_stats(weekly_analyzed)
+        w_themes = get_theme_data(weekly_analyzed)
+        w_issues = get_issues(weekly_analyzed)
+        w_top_reviews = get_top_reviews(weekly_analyzed)
+        w_insights = get_groq_insights("Weekly Delta", w_stats, w_themes, w_issues, w_top_reviews)
+
+        weekly_data = {
+            "week": datetime.now().strftime("%Y-W%U"),
+            "stats": w_stats,
+            "themes": w_themes,
+            "issues": w_issues,
+            "top_reviews": w_top_reviews,
+            "insights": w_insights,
+        }
+
+    print("\n📄 Building PDF...")
+    filename = build_pdf(global_data, weekly_data)
     return filename
 
 
 if __name__ == "__main__":
-    generate_pdf()
+    generate_full_pdf()

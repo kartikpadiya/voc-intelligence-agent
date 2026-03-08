@@ -31,7 +31,7 @@ try:
     generate_global_report()
 
     print("Generating PDF...")
-    generate_pdf()
+    generate_full_pdf()
 
     print(f"WEEKLY JOB COMPLETE: {datetime.now()}")
     log_run("weekly", stats_after['total'], "Success")

@@ -761,7 +761,7 @@ def run_pipeline_job(csv_path):
         log("📄 Creating beautiful PDF report...")
 
         from generate_pdf_report import generate_full_pdf as generate_pdf
-        pdf_path = generate_pdf()
+        pdf_path = generate_full_pdf()
         job_status["pdf_path"] = pdf_path
         log(f"✅ PDF saved: {pdf_path}")
 
