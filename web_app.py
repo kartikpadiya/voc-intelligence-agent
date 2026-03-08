@@ -696,8 +696,9 @@ def run_pipeline_job(csv_path):
 
         import shutil
         dest = 'data/amazon-review-data.csv'
-        if os.path.abspath(csv_path) != os.path.abspath(dest):
-            shutil.copy(csv_path, dest)
+        import shutil
+        shutil.copy(csv_path, dest)
+        log(f"Copied {csv_path} -> {dest} ({sum(1 for _ in open(dest))-1} rows)")
 
         from database import init_database
         init_database()
@@ -748,13 +749,22 @@ def run_pipeline_job(csv_path):
         generate_global_report()
         log("✅ Global report done!")
 
-        # Always generate weekly report
-        log("📝 Generating Weekly Delta Report...")
-        generate_weekly_report()
+        # Weekly report only if new reviews exist AND are analyzed
         if new_count > 0:
-            log(f"✅ Weekly delta report done! ({new_count} new reviews detected)")
+            conn2 = sqlite3.connect(DB_PATH)
+            cur2 = conn2.cursor()
+            cur2.execute("SELECT COUNT(*) FROM reviews WHERE week_added != '2025-W01' AND sentiment IS NOT NULL")
+            analyzed_new = cur2.fetchone()[0]
+            conn2.close()
+            log(f"📊 New reviews analyzed: {analyzed_new}/{new_count}")
+            if analyzed_new > 0:
+                log("📝 Generating Weekly Delta Report...")
+                generate_weekly_report()
+                log(f"✅ Weekly delta report done! ({analyzed_new} new reviews)")
+            else:
+                log("⚠️ New reviews not yet analyzed - skipping weekly report")
         else:
-            log("✅ Weekly report done!")
+            log("ℹ️ No new reviews this week - global report only")
 
         # Step 5: Generate PDF
         job_status["step"] = "Generating PDF"
