@@ -728,43 +728,8 @@ def run_pipeline_job(csv_path):
         job_status["progress"] = 4
         log("📝 Generating action item reports...")
 
-        from reporter import generate_global_report, generate_weekly_report
         from pdf_generator import generate_full_pdf as generate_pdf
-        import sqlite3
-        from database import DB_PATH
-
-        # Check if there are old reviews (delta scenario)
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM reviews WHERE week_added = '2025-W01'")
-        old_count = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM reviews WHERE week_added != '2025-W01'")
-        new_count = cursor.fetchone()[0]
-        conn.close()
-
-        log(f"📊 Old reviews: {old_count} | New reviews: {new_count}")
-
-        # Always generate global report
-        log("📝 Generating Global Report...")
-        generate_global_report()
-        log("✅ Global report done!")
-
-        # Weekly report only if new reviews exist AND are analyzed
-        if new_count > 0:
-            conn2 = sqlite3.connect(DB_PATH)
-            cur2 = conn2.cursor()
-            cur2.execute("SELECT COUNT(*) FROM reviews WHERE week_added != '2025-W01' AND sentiment IS NOT NULL")
-            analyzed_new = cur2.fetchone()[0]
-            conn2.close()
-            log(f"📊 New reviews analyzed: {analyzed_new}/{new_count}")
-            if analyzed_new > 0:
-                log("📝 Generating Weekly Delta Report...")
-                generate_weekly_report()
-                log(f"✅ Weekly delta report done! ({analyzed_new} new reviews)")
-            else:
-                log("⚠️ New reviews not yet analyzed - skipping weekly report")
-        else:
-            log("ℹ️ No new reviews this week - global report only")
+        log("📝 Generating PDF report with Groq insights...")
 
         # Step 5: Generate PDF
         job_status["step"] = "Generating PDF"
