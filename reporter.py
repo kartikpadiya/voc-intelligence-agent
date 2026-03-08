@@ -1,215 +1,188 @@
 import os
 import json
+import sqlite3
 from datetime import datetime
 from groq import Groq
 from dotenv import load_dotenv
-from database import get_all_reviews, get_weekly_reviews
-from analyzer import get_theme_summary
+from database import get_all_reviews, get_weekly_reviews, DB_PATH
 
 load_dotenv()
-
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
+THEMES = [
+    "Sound Quality", "Battery Life", "Comfort/Fit",
+    "App Experience", "Price/Value", "Delivery",
+    "Build Quality", "ANC"
+]
 
-def get_actual_counts(reviews):
+
+# ─────────────────────────────────────────
+# DATA HELPERS
+# ─────────────────────────────────────────
+
+def get_products_from_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT product_id, product_name FROM reviews")
+    products = cursor.fetchall()
+    conn.close()
+    return products
+
+
+def get_theme_tagging(reviews):
+    """Theme wise Positive/Negative/Neutral counts"""
+    result = {}
     total = len(reviews)
-    if total == 0:
-        return {}
-    keywords = {
-        "noise cancellation": 0, "bluetooth": 0, "battery": 0,
-        "app crash": 0, "uncomfortable": 0, "fall out": 0,
-        "return": 0, "sound quality": 0, "fit": 0, "anc": 0,
-        "disconnect": 0, "lag": 0, "pairing": 0, "bass": 0,
-        "mic": 0, "worth": 0, "cheap": 0, "expensive": 0,
-        "recommend": 0, "worst": 0, "best": 0, "comfortable": 0,
-        "charging": 0, "case": 0, "volume": 0
-    }
-    for r in reviews:
-        text = (r.get("text", "") + " " + r.get("title", "")).lower()
-        for keyword in keywords:
-            if keyword in text:
-                keywords[keyword] += 1
-    result = {"total_reviews": total, "keyword_analysis": {}}
-    for keyword, count in keywords.items():
-        if count > 0:
-            percentage = round((count / total) * 100, 1)
-            severity = (
-                "CRITICAL" if percentage > 20 else
-                "HIGH" if percentage > 10 else
-                "MEDIUM" if percentage > 5 else "LOW"
-            )
-            result["keyword_analysis"][keyword] = {
-                "mentions": count,
-                "out_of": total,
-                "percentage": f"{percentage}%",
-                "severity": severity
-            }
-    return result
+    for theme in THEMES:
+        result[theme] = {"Positive": 0, "Negative": 0, "Neutral": 0, "total": 0, "top_reviews": []}
 
-
-def get_theme_detailed(reviews):
-    total = len(reviews)
-    if total == 0:
-        return {}
-    theme_data = {}
     for r in reviews:
         themes = json.loads(r["themes"]) if r.get("themes") else []
         sentiment = r.get("sentiment", "Neutral")
-        rating = r.get("rating", 0)
         for theme in themes:
-            if theme not in theme_data:
-                theme_data[theme] = {
-                    "total_mentions": 0, "Positive": 0,
-                    "Negative": 0, "Neutral": 0,
-                    "ratings": [], "percentage_of_reviews": 0, "health": ""
-                }
-            theme_data[theme]["total_mentions"] += 1
-            theme_data[theme][sentiment] += 1
-            theme_data[theme]["ratings"].append(rating)
-    for theme in theme_data:
-        total_mentions = theme_data[theme]["total_mentions"]
-        percentage = round((total_mentions / total) * 100, 1)
-        theme_data[theme]["percentage_of_reviews"] = f"{percentage}%"
-        avg_rating = round(
-            sum(theme_data[theme]["ratings"]) /
-            len(theme_data[theme]["ratings"]), 1
-        )
-        theme_data[theme]["avg_rating"] = avg_rating
-        del theme_data[theme]["ratings"]
-        pos = theme_data[theme]["Positive"]
-        neg = theme_data[theme]["Negative"]
-        if neg > pos:
-            theme_data[theme]["health"] = "PROBLEM AREA"
-        elif pos > neg * 2:
-            theme_data[theme]["health"] = "STRENGTH"
+            if theme in result:
+                result[theme][sentiment] += 1
+                result[theme]["total"] += 1
+                if len(result[theme]["top_reviews"]) < 3:
+                    result[theme]["top_reviews"].append(
+                        f"[{sentiment}][{r['rating']}★] {r['title']}: {r['text'][:150]}"
+                    )
+
+    # Add percentages and health
+    for theme in result:
+        t = result[theme]["total"]
+        if t > 0:
+            result[theme]["pct_of_reviews"] = f"{round(t/total*100,1)}%"
+            pos = result[theme]["Positive"]
+            neg = result[theme]["Negative"]
+            if neg > pos:
+                result[theme]["health"] = "🔴 PROBLEM AREA"
+            elif pos > neg * 2:
+                result[theme]["health"] = "🟢 STRENGTH"
+            else:
+                result[theme]["health"] = "🟡 MIXED"
         else:
-            theme_data[theme]["health"] = "MIXED"
-    return theme_data
+            result[theme]["pct_of_reviews"] = "0%"
+            result[theme]["health"] = "⚪ NO DATA"
 
-
-def get_rating_distribution(reviews):
-    total = len(reviews)
-    dist = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
-    for r in reviews:
-        rating = int(r.get("rating", 3))
-        if rating in dist:
-            dist[rating] += 1
-    result = {}
-    for rating, count in dist.items():
-        percentage = round((count / total) * 100, 1) if total > 0 else 0
-        result[f"{rating}_star"] = {
-            "count": count,
-            "percentage": f"{percentage}%"
-        }
-    avg = round(
-        sum(r.get("rating", 0) for r in reviews) / total, 2
-    ) if total > 0 else 0
-    result["average_rating"] = avg
     return result
 
 
-def get_sentiment_distribution(reviews):
+def get_top_issues(reviews):
+    """Top issues with severity"""
+    keywords = {
+        "disconnects/bluetooth drops": ["disconnect", "bluetooth drop", "keeps disconnecting"],
+        "poor ANC": ["anc", "noise cancel", "no noise cancel"],
+        "app crashes": ["app crash", "app not working", "app issue"],
+        "uncomfortable fit": ["uncomfortable", "fall out", "hurts", "pain"],
+        "poor battery": ["battery drain", "battery life", "dies fast"],
+        "bad mic quality": ["mic", "microphone", "call quality"],
+        "lag/latency": ["lag", "latency", "delay"],
+        "pairing issues": ["pairing", "won't connect", "connect issue"],
+        "bad sound quality": ["sound quality", "bad sound", "tinny", "muffled"],
+        "charging issues": ["charging", "won't charge", "charge issue"],
+        "build quality": ["cheap", "broke", "plastic", "flimsy"],
+        "touch controls": ["touch", "controls not working", "accidental"],
+    }
     total = len(reviews)
-    counts = {"Positive": 0, "Negative": 0, "Neutral": 0}
-    for r in reviews:
-        if r.get("sentiment"):
-            s = r.get("sentiment", "Neutral")
-            counts[s] = counts.get(s, 0) + 1
-    result = {}
-    for sentiment, count in counts.items():
-        percentage = round((count / total) * 100, 1) if total > 0 else 0
-        result[sentiment] = {
-            "count": count,
-            "percentage": f"{percentage}%"
-        }
-    return result
+    issues = {}
+    for issue, kws in keywords.items():
+        count = 0
+        samples = []
+        for r in reviews:
+            text = (r.get("text","") + " " + r.get("title","")).lower()
+            if any(kw in text for kw in kws):
+                count += 1
+                if len(samples) < 2:
+                    samples.append(f"[{r['rating']}★] {r['text'][:120]}")
+        if count > 0:
+            pct = round(count/total*100, 1)
+            severity = "🔴 CRITICAL" if pct > 20 else "🟠 HIGH" if pct > 10 else "🟡 MEDIUM" if pct > 5 else "🟢 LOW"
+            issues[issue] = {
+                "count": count,
+                "percentage": f"{pct}%",
+                "severity": severity,
+                "sample_reviews": samples
+            }
+    return dict(sorted(issues.items(), key=lambda x: x[1]["count"], reverse=True))
 
 
-def get_review_samples(reviews, sentiment, limit=5):
-    filtered = [
-        r for r in reviews if r.get("sentiment") == sentiment
-    ][:limit]
-    return [
-        f"[{r['rating']}star] {r['title']}: {r['text'][:250]}"
-        for r in filtered
-    ]
+def get_top_reviews(reviews, limit=5):
+    """Top positive and negative reviews"""
+    pos = sorted([r for r in reviews if r.get("sentiment") == "Positive"],
+                 key=lambda x: x.get("rating", 0), reverse=True)[:limit]
+    neg = sorted([r for r in reviews if r.get("sentiment") == "Negative"],
+                 key=lambda x: x.get("rating", 0))[:limit]
+    return {
+        "top_positive": [f"[{r['rating']}★] {r['title']}: {r['text'][:200]}" for r in pos],
+        "top_negative": [f"[{r['rating']}★] {r['title']}: {r['text'][:200]}" for r in neg]
+    }
 
 
-def build_deep_context(reviews, limit=80):
-    analyzed = [r for r in reviews if r.get("sentiment")][:limit]
-    lines = []
-    for r in analyzed:
-        themes = json.loads(r["themes"]) if r.get("themes") else []
-        lines.append(
-            f"[{r['sentiment']}][Rating:{r['rating']}][{', '.join(themes)}] "
-            f"Title: {r['title']} | Review: {r['text'][:250]}"
-        )
-    return "\n".join(lines)
+def get_rating_sentiment(reviews):
+    total = len(reviews)
+    if not total:
+        return {}
+    avg = round(sum(r.get("rating", 0) for r in reviews) / total, 2)
+    pos = sum(1 for r in reviews if r.get("sentiment") == "Positive")
+    neg = sum(1 for r in reviews if r.get("sentiment") == "Negative")
+    neu = total - pos - neg
+    return {
+        "total_reviews": total,
+        "avg_rating": avg,
+        "positive_pct": f"{round(pos/total*100,1)}%",
+        "negative_pct": f"{round(neg/total*100,1)}%",
+        "neutral_pct": f"{round(neu/total*100,1)}%",
+    }
 
+
+# ─────────────────────────────────────────
+# SINGLE PRODUCT REPORT
+# ─────────────────────────────────────────
 
 def generate_single_product_report(product_id, product_name, reviews, today):
-    print(f"Analyzing {product_name}...")
+    print(f"  Generating report for {product_name}...")
+    analyzed = [r for r in reviews if r.get("sentiment")]
+    if not analyzed:
+        return f"# {product_name}\nNo analyzed reviews."
 
-    context = build_deep_context(reviews)
-    counts = get_actual_counts(reviews)
-    themes = get_theme_detailed(reviews)
-    rating_dist = get_rating_distribution(reviews)
-    sentiment_dist = get_sentiment_distribution(reviews)
-    neg_samples = get_review_samples(reviews, "Negative", 5)
-    pos_samples = get_review_samples(reviews, "Positive", 4)
+    themes = get_theme_tagging(analyzed)
+    issues = get_top_issues(analyzed)
+    top_reviews = get_top_reviews(analyzed)
+    stats = get_rating_sentiment(analyzed)
 
     prompt = (
-        f"You are a senior Voice of Customer Analyst.\n"
-        f"Analyze reviews for {product_name} and generate a detailed report.\n"
-        f"Use ONLY real numbers from data provided. Never make up frequencies.\n\n"
-        f"=== {product_name} Reviews ===\n" + context + "\n\n"
-        "=== Rating Distribution ===\n" + json.dumps(rating_dist, indent=2) + "\n\n"
-        "=== Sentiment Distribution ===\n" + json.dumps(sentiment_dist, indent=2) + "\n\n"
-        "=== Theme Analysis ===\n" + json.dumps(themes, indent=2) + "\n\n"
-        "=== Keyword Frequency ===\n" + json.dumps(counts, indent=2) + "\n\n"
-        "=== Negative Reviews ===\n" + "\n".join(neg_samples) + "\n\n"
-        "=== Positive Reviews ===\n" + "\n".join(pos_samples) + "\n\n"
-        f"Generate report for {product_name} with EXACTLY these sections:\n\n"
-        f"# {product_name} — Product Intelligence Report\n"
-        f"## Generated: {today}\n\n"
-        "## Product Health Scorecard\n"
-        "Overall Rating, Sentiment Split, Health Score out of 10, Biggest Strength, Biggest Weakness.\n\n"
-        "## Theme Analysis\n"
-        "For each theme: mention count, percentage, STRENGTH/PROBLEM AREA/MIXED, customer quote.\n\n"
-        "## PRODUCT TEAM ACTION ITEMS\n\n"
-        "### Recurring Bugs and Crashes\n"
-        "Format: Bug - X mentions out of Y reviews (Z%) - Severity\n\n"
-        "### Hardware Design Issues\n"
-        "Physical problems with frequency and review quotes.\n\n"
-        "### Software and App Issues\n"
-        "App/firmware issues with frequency.\n\n"
-        "### Features To Fix - Priority Order\n"
-        "Rank by negative mention percentage. Show actual data.\n\n"
-        "### Features Working Well - Do Not Break\n"
-        "Highest positive mention counts with evidence.\n\n"
-        "## MARKETING TEAM ACTION ITEMS\n\n"
-        "### What To Highlight In Ads\n"
-        "Top features with actual positive sentiment percentage.\n\n"
-        "### What To Stop Claiming\n"
-        "Features where negative mentions exceed 10 percent.\n\n"
-        "### Target Audience Insights\n"
-        "Who is buying this product based on review language.\n\n"
-        "## SUPPORT TEAM ACTION ITEMS\n\n"
-        "### Top 10 Most Common Complaints\n"
-        "Ranked by frequency with actual numbers.\n\n"
-        "### Troubleshooting Guides Needed\n"
-        "Specific guides based on recurring issues.\n\n"
-        "### FAQs To Create\n"
-        "Questions customers keep asking.\n\n"
-        "### Red Flag Issues\n"
-        "Issues where customers mention returning product.\n\n"
-        "### Customer Effort Score\n"
-        "How hard customers work to fix issues themselves.\n\n"
-        "## VERBATIM CUSTOMER VOICE\n"
-        "3 best positive quotes, 3 worst negative quotes.\n\n"
-        "## TOP 5 RECOMMENDATIONS\n"
-        "Format: What, Why with data, Expected Impact.\n\n"
-        "CRITICAL: Every number must come from provided data."
+        f"You are a senior VoC Analyst at Noise.\n"
+        f"Generate a structured report for {product_name}.\n"
+        f"Use ONLY the data provided. No hallucinations.\n\n"
+        f"=== STATS ===\n{json.dumps(stats, indent=2)}\n\n"
+        f"=== THEME TAGGING (Pos/Neg/Neutral per theme) ===\n{json.dumps(themes, indent=2)}\n\n"
+        f"=== TOP ISSUES WITH SEVERITY ===\n{json.dumps(issues, indent=2)}\n\n"
+        f"=== TOP REVIEWS ===\n{json.dumps(top_reviews, indent=2)}\n\n"
+        f"Generate report with EXACTLY this structure:\n\n"
+        f"# {product_name} — VoC Intelligence Report\n"
+        f"**Date:** {today}\n\n"
+        f"## 📊 Product Health Snapshot\n"
+        f"Avg Rating, Sentiment split, 1-line health summary.\n\n"
+        f"## 🏷️ Theme-Wise Analysis\n"
+        f"For ALL 8 themes show:\n"
+        f"- Positive / Negative / Neutral counts\n"
+        f"- Health status (STRENGTH / PROBLEM AREA / MIXED)\n"
+        f"- 1 top customer quote\n\n"
+        f"## ⭐ Top Customer Reviews\n"
+        f"Top 3 positive and top 3 negative reviews verbatim.\n\n"
+        f"## 🔴 Top Issues — Severity Ranked\n"
+        f"List ALL issues from data ranked by severity.\n"
+        f"Format: Issue | Count | % | Severity | Sample Quote\n\n"
+        f"## 🛠️ Product Team Actions\n"
+        f"Top 5 specific actions with severity and data evidence.\n\n"
+        f"## 📣 Marketing Team Actions\n"
+        f"What to highlight, what to stop claiming — with data.\n\n"
+        f"## 🎧 Support Team Actions\n"
+        f"Top complaints to address, FAQs to create, guides needed.\n\n"
+        f"## 🏆 Top 5 Recommendations\n"
+        f"| # | What | Why (Data) | Impact |\n"
+        f"|---|------|-----------|--------|\n"
     )
 
     try:
@@ -221,38 +194,73 @@ def generate_single_product_report(product_id, product_name, reviews, today):
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Error for {product_name}: {e}")
+        print(f"Error: {e}")
         return None
 
 
-def generate_comparison_report(report1, report2, today):
-    print("Generating comparison and combined report...")
+# ─────────────────────────────────────────
+# COMPETITOR GAP ANALYSIS
+# ─────────────────────────────────────────
+
+def generate_competitor_analysis(all_products_data, today):
+    print("  Generating Competitor Gap Analysis...")
+
+    summaries = {}
+    for pid, pname, reviews in all_products_data:
+        analyzed = [r for r in reviews if r.get("sentiment")]
+        if not analyzed:
+            continue
+        summaries[pname] = {
+            "stats": get_rating_sentiment(analyzed),
+            "themes": {
+                t: {
+                    "Positive": d["Positive"],
+                    "Negative": d["Negative"],
+                    "health": d["health"]
+                }
+                for t, d in get_theme_tagging(analyzed).items()
+            },
+            "top_issues": {
+                k: {"count": v["count"], "severity": v["severity"]}
+                for k, v in list(get_top_issues(analyzed).items())[:8]
+            },
+            "top_positive": get_top_reviews(analyzed)["top_positive"][:2],
+            "top_negative": get_top_reviews(analyzed)["top_negative"][:2],
+        }
+
+    if len(summaries) < 2:
+        return "# Competitor Analysis\nNeed at least 2 products."
+
+    names = list(summaries.keys())
 
     prompt = (
-        "You are a senior Voice of Customer Analyst.\n"
-        "Based on these two product reports, generate a Head to Head comparison.\n\n"
-        "=== MASTER BUDS 1 REPORT ===\n" + report1[:2000] + "\n\n"
-        "=== MASTER BUDS MAX REPORT ===\n" + report2[:2000] + "\n\n"
-        "Generate EXACTLY these sections:\n\n"
-        "# Head To Head Comparison — Master Buds 1 vs Master Buds Max\n"
-        f"## Generated: {today}\n\n"
-        "## Overall Winner\n"
-        "Which product wins overall and why based on data.\n\n"
-        "## Feature by Feature Comparison\n"
-        "| Feature | Master Buds 1 | Master Buds Max | Winner |\n"
-        "|---------|--------------|-----------------|--------|\n"
-        "Fill: Sound Quality, ANC, Battery Life, Comfort/Fit, "
-        "App Experience, Build Quality, Price/Value\n\n"
-        "## What Master Buds 1 Does Better\n"
-        "Specific advantages with data evidence.\n\n"
-        "## What Master Buds Max Does Better\n"
-        "Specific advantages with data evidence.\n\n"
-        "## Common Issues Across Both Products\n"
-        "Problems affecting both products.\n\n"
-        "## Customer Switching Patterns\n"
-        "Are customers switching between these products? Why?\n\n"
-        "## Combined Top 5 Recommendations\n"
-        "Most impactful improvements across both products."
+        f"You are a competitive intelligence analyst at Noise.\n"
+        f"Compare products and find gaps using ONLY provided data.\n\n"
+        f"=== PRODUCT DATA ===\n{json.dumps(summaries, indent=2)}\n\n"
+        f"Generate EXACTLY:\n\n"
+        f"# 🏆 Competitor Gap Analysis\n"
+        f"**Date:** {today}\n\n"
+        f"## 📊 Head-to-Head Scorecard\n"
+        f"| Factor | " + " | ".join(names) + " | Winner |\n"
+        f"|--------|" + "--------|" * len(names) + "--------|\n"
+        f"Fill for: Avg Rating, Positive%, Negative%, "
+        f"Sound Quality, ANC, Battery Life, Comfort/Fit, "
+        f"App Experience, Build Quality, Price/Value\n\n"
+        f"## 💪 Where Each Product Leads\n"
+        f"For each product: top 3 advantages with data.\n\n"
+        f"## ⚠️ Common Weaknesses (All Products)\n"
+        f"Issues affecting all products — industry-wide problems.\n\n"
+        f"## 🎯 Top Issues Comparison\n"
+        f"| Issue | " + " | ".join(names) + " |\n"
+        f"|-------|" + "-------|" * len(names) + "\n"
+        f"Compare top issues across products.\n\n"
+        f"## 🚀 Gaps To Close (Opportunities for Noise)\n"
+        f"Top 3 areas where improvement beats competition.\n\n"
+        f"## 📣 Positioning Recommendations\n"
+        f"How to position each product based on actual data.\n\n"
+        f"## ⚡ Customer Switching Risk\n"
+        f"Which product is at highest churn risk and why.\n\n"
+        f"Use only data provided."
     )
 
     try:
@@ -260,72 +268,73 @@ def generate_comparison_report(report1, report2, today):
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=2000
+            max_tokens=2500
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Error generating comparison: {e}")
+        print(f"Error: {e}")
         return None
 
 
+# ─────────────────────────────────────────
+# GLOBAL REPORT
+# ─────────────────────────────────────────
+
 def generate_global_report():
-    print("="*50)
-    print("Generating Deep Global Action Items Report...")
-    print("Splitting into 3 focused API calls for quality...")
-    print("="*50)
+    print("=" * 55)
+    print("Generating Global VoC Intelligence Report...")
+    print("=" * 55)
 
-    product1_reviews = get_all_reviews("master_buds_1")
-    product2_reviews = get_all_reviews("master_buds_max")
-
-    if not any(
-        r.get("sentiment") for r in product1_reviews + product2_reviews
-    ):
-        print("No analyzed reviews yet! Run analyzer.py first.")
+    products = get_products_from_db()
+    if not products:
+        print("No products in DB!")
         return None
 
     today = datetime.now().strftime("%Y-%m-%d")
+    all_products_data = []
 
-    # Call 1: Master Buds 1
-    report1 = generate_single_product_report(
-        "master_buds_1", "Master Buds 1 (EarFun)",
-        product1_reviews, today
-    )
+    for product_id, product_name in products:
+        reviews = get_all_reviews(product_id)
+        all_products_data.append((product_id, product_name, reviews))
+        print(f"  {product_name}: {len(reviews)} reviews")
 
-    # Call 2: Master Buds Max
-    report2 = generate_single_product_report(
-        "master_buds_max", "Master Buds Max (Apple AirPods)",
-        product2_reviews, today
-    )
+    product_reports = []
+    for pid, pname, reviews in all_products_data:
+        report = generate_single_product_report(pid, pname, reviews, today)
+        if report:
+            product_reports.append(report)
 
-    # Call 3: Comparison
-    comparison = generate_comparison_report(report1, report2, today)
+    competitor = generate_competitor_analysis(all_products_data, today)
 
-    # Combine all 3
+    total_reviews = sum(len(r[2]) for r in all_products_data)
     final_report = (
-        f"# Global Voice of Customer Intelligence Report\n"
-        f"## Generated: {today}\n\n"
+        f"# 🎧 Voice of Customer Intelligence Report\n"
+        f"**Generated:** {today} | "
+        f"**Products:** {', '.join([p[1] for p in products])} | "
+        f"**Total Reviews:** {total_reviews}\n\n"
         f"---\n\n"
-        + (report1 or "") + "\n\n"
-        + "---\n\n"
-        + (report2 or "") + "\n\n"
-        + "---\n\n"
-        + (comparison or "")
+        + "\n\n---\n\n".join(product_reports)
+        + "\n\n---\n\n"
+        + (competitor or "")
     )
 
     os.makedirs("reports", exist_ok=True)
     filename = f"reports/global_report_{datetime.now().strftime('%Y%m%d')}.md"
-
     with open(filename, "w") as f:
         f.write(final_report)
 
-    print(f"\nGlobal report saved to {filename}")
+    print(f"\n✅ Global report saved: {filename}")
     return final_report
 
 
+# ─────────────────────────────────────────
+# WEEKLY DELTA REPORT
+# ─────────────────────────────────────────
+
 def generate_weekly_report():
-    print("="*50)
-    print("Generating Deep Weekly Delta Report...")
-    print("="*50)
+    print("=" * 55)
+    print("Generating Weekly Delta Report...")
+    print("=" * 55)
 
     weekly_reviews = get_weekly_reviews()
     if not weekly_reviews:
@@ -337,50 +346,73 @@ def generate_weekly_report():
         print("Weekly reviews not analyzed yet!")
         return None
 
-    context = build_deep_context(weekly_reviews)
-    counts = get_actual_counts(weekly_reviews)
-    themes = get_theme_detailed(weekly_reviews)
-    rating_dist = get_rating_distribution(weekly_reviews)
-    sentiment_dist = get_sentiment_distribution(weekly_reviews)
-    neg_samples = get_review_samples(weekly_reviews, "Negative", 5)
-    pos_samples = get_review_samples(weekly_reviews, "Positive", 5)
-
+    today = datetime.now().strftime("%Y-%m-%d")
     week = datetime.now().strftime("%Y-W%U")
-    total = str(len(weekly_reviews))
+
+    # This week data
+    themes = get_theme_tagging(analyzed)
+    issues = get_top_issues(analyzed)
+    top_reviews = get_top_reviews(analyzed)
+    stats = get_rating_sentiment(analyzed)
+
+    # Previous period for comparison
+    all_old = []
+    for pid, pname in get_products_from_db():
+        reviews = get_all_reviews(pid)
+        all_old.extend([r for r in reviews
+                       if r.get("week_added") == "2025-W01"
+                       and r.get("sentiment")])
+
+    old_stats = get_rating_sentiment(all_old) if all_old else {}
+    old_themes = {
+        t: {"Positive": d["Positive"], "Negative": d["Negative"], "health": d["health"]}
+        for t, d in get_theme_tagging(all_old).items()
+    } if all_old else {}
+    old_issues = {
+        k: {"count": v["count"], "severity": v["severity"]}
+        for k, v in list(get_top_issues(all_old).items())[:8]
+    } if all_old else {}
 
     prompt = (
-        "You are a senior Voice of Customer Analyst.\n"
-        "Based on THIS WEEK new reviews ONLY generate Weekly Delta Report.\n"
-        "Use ONLY real numbers. Never guess.\n\n"
-        "=== This Week Reviews ===\n" + context + "\n\n"
-        "=== Rating Distribution ===\n" + json.dumps(rating_dist, indent=2) + "\n\n"
-        "=== Sentiment Distribution ===\n" + json.dumps(sentiment_dist, indent=2) + "\n\n"
-        "=== Theme Analysis ===\n" + json.dumps(themes, indent=2) + "\n\n"
-        "=== Keyword Frequency ===\n" + json.dumps(counts, indent=2) + "\n\n"
-        "=== Worst Reviews ===\n" + "\n".join(neg_samples) + "\n\n"
-        "=== Best Reviews ===\n" + "\n".join(pos_samples) + "\n\n"
-        "# Weekly Delta Report\n"
-        "## Week: " + week + "\n"
-        "## Total New Reviews: " + total + "\n\n"
-        "## Weekly Summary\n"
-        "4-5 sentences with actual numbers.\n\n"
-        "## Week At A Glance\n"
-        "Total Reviews, Avg Rating, Sentiment Split, Top Theme, Biggest Problem, Biggest Win.\n\n"
-        "## Sudden Complaint Spikes\n"
-        "High negative frequency with actual counts.\n\n"
-        "## Sudden Praise Spikes\n"
-        "High positive frequency features.\n\n"
-        "## New Bugs Reported\n"
-        "Fresh issues this week with review quotes.\n\n"
-        "## Recurring Issues Still Present\n"
-        "Old problems still mentioned.\n\n"
-        "## Urgent Product Team Actions\n\n"
-        "## Urgent Marketing Team Actions\n\n"
-        "## Urgent Support Team Actions\n\n"
-        "## Most Insightful Reviews This Week\n"
-        "5 reviews with full quotes.\n\n"
-        "## Top 3 Actions Before Next Week\n\n"
-        "Use real numbers only."
+        f"You are a senior VoC Analyst at Noise.\n"
+        f"Generate Weekly Delta Report for week {week}.\n"
+        f"Show what CHANGED vs previous period. Use ONLY real numbers.\n\n"
+        f"=== THIS WEEK ({len(analyzed)} new reviews) ===\n"
+        f"Stats: {json.dumps(stats, indent=2)}\n"
+        f"Themes: {json.dumps(themes, indent=2)}\n"
+        f"Issues: {json.dumps(issues, indent=2)}\n"
+        f"Top Reviews: {json.dumps(top_reviews, indent=2)}\n\n"
+        f"=== PREVIOUS PERIOD (baseline) ===\n"
+        f"Stats: {json.dumps(old_stats, indent=2)}\n"
+        f"Themes: {json.dumps(old_themes, indent=2)}\n"
+        f"Issues: {json.dumps(old_issues, indent=2)}\n\n"
+        f"Generate EXACTLY:\n\n"
+        f"# 📅 Weekly Delta Report — {week}\n"
+        f"**Date:** {today} | **New Reviews:** {len(analyzed)}\n\n"
+        f"## 📊 Week At A Glance\n"
+        f"| Metric | This Week | Previous | Change |\n"
+        f"|--------|-----------|----------|--------|\n"
+        f"Fill: Avg Rating, Positive%, Negative%, Top Theme, Review Count\n\n"
+        f"## 🏷️ Theme-Wise This Week\n"
+        f"For ALL 8 themes:\n"
+        f"- Positive / Negative / Neutral counts\n"
+        f"- Health vs previous (better/worse/same)\n"
+        f"- 1 top customer quote\n\n"
+        f"## ⭐ Top Reviews This Week\n"
+        f"Top 3 positive and top 3 negative verbatim.\n\n"
+        f"## 🔴 Top Issues This Week — Severity Ranked\n"
+        f"Issue | Count | % | Severity | Change vs Last Week\n\n"
+        f"## 📈 Complaint Spikes (New or Worsened)\n"
+        f"Issues that increased vs previous period with data.\n\n"
+        f"## 📉 Improvements This Week\n"
+        f"Issues that decreased or themes that improved.\n\n"
+        f"## 🛠️ Urgent Product Team Actions\n\n"
+        f"## 📣 Urgent Marketing Team Actions\n\n"
+        f"## 🎧 Urgent Support Team Actions\n\n"
+        f"## 🏆 Top 3 Actions Before Next Week\n"
+        f"| Priority | Action | Owner | Expected Outcome |\n"
+        f"|----------|--------|-------|------------------|\n\n"
+        f"Use real numbers only."
     )
 
     try:
@@ -395,7 +427,7 @@ def generate_weekly_report():
         filename = f"reports/weekly_report_{datetime.now().strftime('%Y_W%U')}.md"
         with open(filename, "w") as f:
             f.write(report)
-        print(f"Weekly report saved to {filename}")
+        print(f"✅ Weekly report saved: {filename}")
         return report
     except Exception as e:
         print(f"Error: {e}")

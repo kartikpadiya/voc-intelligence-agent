@@ -12,7 +12,7 @@ print("="*50)
 try:
     from analyzer import analyze_weekly_reviews
     from reporter import generate_global_report, generate_weekly_report
-    from pdf_generator import generate_pdf
+    from generate_pdf_report import generate_full_pdf as generate_pdf
     from database import get_stats, log_run
 
     stats_before = get_stats()
