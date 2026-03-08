@@ -16,7 +16,7 @@ THEMES = [
     "Price/Value",
     "Delivery",
     "Build Quality",
-    "ANC (Noise Cancellation)"
+    "ANC"
 ]
 
 def analyze_review(review):
@@ -91,17 +91,25 @@ def analyze_all_reviews():
     print("Starting AI Analysis of All Reviews...")
     print("="*50)
 
-    reviews = get_all_reviews("master_buds_1")
-    unanalyzed = [r for r in reviews if not r.get("sentiment")]
+    import sqlite3, time
+    from database import DB_PATH
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT product_id FROM reviews")
+    products = [row[0] for row in cursor.fetchall()]
+    conn.close()
 
-    print(f"Found {len(unanalyzed)} reviews to analyze")
-
-    for i, review in enumerate(unanalyzed):
-        print(f"Analyzing review {i+1}/{len(unanalyzed)}...", end="\r")
-        sentiment, themes = analyze_review(review)
-        update_sentiment_and_themes(review["id"], sentiment, themes)
-
-    print(f"\nAnalysis complete! Processed {len(unanalyzed)} reviews")
+    for product_id in products:
+        reviews = get_all_reviews(product_id)
+        unanalyzed = [r for r in reviews if not r.get("sentiment")]
+        print(f"\n{product_id}: {len(unanalyzed)} to analyze")
+        for i, review in enumerate(unanalyzed):
+            print(f"  [{product_id}] {i+1}/{len(unanalyzed)}...", end="\r")
+            sentiment, themes = analyze_review(review)
+            update_sentiment_and_themes(review["id"], sentiment, themes)
+            time.sleep(2)
+        print(f"  {product_id} done!")
+    print("\nAll products analyzed!")
 
 
 def analyze_weekly_reviews():
