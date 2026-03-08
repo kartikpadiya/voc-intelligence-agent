@@ -24,7 +24,7 @@ Upload any product reviews CSV → AI analyzes → PDF report downloads automati
 - ✅ Conversational querying ("What are top complaints?")
 - ✅ Weekly automation via LaunchD (every Sunday 11:59 PM)
 - ✅ Flask REST API for external triggers
-- ✅ N8n workflow automation (configured)
+- ✅ Weekly automation via LaunchD (every Sunday 11:59 PM)
 - ✅ Web interface for CSV upload + PDF download
 
 ---
@@ -35,7 +35,7 @@ Upload any product reviews CSV → AI analyzes → PDF report downloads automati
 - **LLM**: Groq API (llama-3.1-8b-instant, llama-3.3-70b-versatile)
 - **PDF**: ReportLab
 - **Web**: Flask
-- **Automation**: LaunchD + n8n
+- **Automation**: LaunchD (Mac native scheduler)
 - **Scraping**: BeautifulSoup, Selenium, Playwright, ScraperAPI (see below)
 
 ---
